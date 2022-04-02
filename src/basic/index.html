@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Your micro:bit files</title>
+    <style>
+        body {
+            font-family: sans-serif;
+        }
+
+        header {
+            font-size: xx-large;
+            font-weight: 600;
+        }
+
+        ul {
+            padding: 0 0 0 20px;
+            line-height: 1.3em;
+            list-style: none;
+        }
+
+        .n {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .n::before {
+            content: "\27A4";
+            color: #333;
+            display: inline-block;
+            margin-right: 1em;
+
+            transform: rotate(90deg);
+            transition: all 0.2s ease-out;
+        }
+
+        .m > .n::before {
+            transform: rotate(0);
+        }
+
+        #z, .m > ul {
+            display: none;
+        }
+
+        iframe {
+            border: none;
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+        }
+    </style>
+    <script>
+        const DEBUG = true;
+        let fullBrowserCreated = false;
+
+        function redirectToFullBrowser(data) {
+            if (fullBrowserCreated) {
+                return;
+            }
+
+            const iframe = DOCUMENT.createElement("iframe");
+            iframe.setAttribute("name", "filesystem");
+            iframe.setAttribute("allow", "usb");
+            iframe.setAttribute("src", DEBUG ? "http://localhost:8080" : "https://laughing-roentgen-badb1f.netlify.app/"); // todo: permanent url
+
+            DOCUMENT.body.appendChild(iframe);
+
+            fullBrowserCreated = true;
+
+            iframe.onload = function () {
+                let win = window.frames.filesystem;
+
+                setTimeout(() => win.postMessage({i: "fs", d: data}, "*"), 2000); //TODO hack, this just pushes the data after 2 sec, this needs to be dynamic
+            };
+        }
+
+        const SIZEOF_DIRECTORYENTRY = 24;
+
+        const BLOCK_FLAG_UNUSED = 0xffff;
+        const BLOCK_FLAG_END_OF_FILE = 0xefff;
+        const BLOCK_FLAG_DELETED = 0x0000;
+
+        const DIR_ENTRY_FLAG_FREE = 0x8000;
+        const DIR_ENTRY_FLAG_VALID = 0x4000;
+        const DIR_ENTRY_FLAG_DIRECTORY = 0x2000;
+        const DIR_ENTRY_FLAG_NEW = 0xffff;
+        const DIR_ENTRY_FLAG_DELETED = 0x0000;
+
+        const DOCUMENT = document; // will be minified
+
+        window.onload = function () {
+            let rawBytesElem = DOCUMENT.getElementById("z");
+            let rawBytes = rawBytesElem.innerHTML;
+            rawBytesElem.remove();
+
+            let flashStart = 0, flashEnd = 0, pageSize = 1024, blockSize = 512, flashSize = 131072; // todo: non-hardcode
+            let data = new DataView(new Uint8Array(rawBytes.match(/([0-9]|[a-f]){2}/gi).map(h => parseInt(h, 16))).buffer);
+
+            window.addEventListener("online", () => redirectToFullBrowser(data.buffer));
+
+            if (navigator.onLine) {
+                redirectToFullBrowser(data.buffer);
+                return;
+            }
+
+            // Gets block info for a specific index from the block table
+            let blockInfo = blockIndex => data.getUint16(flashStart + blockIndex * 2, true);
+            let blockData = blockIndex => new DataView(data.buffer, flashStart + blockIndex * blockSize, blockSize);
+
+            //Load the filesystem...
+            let rootOffset = blockInfo(0);
+            for (let i = 0; i < rootOffset; i++) {
+                let status = blockInfo(i);
+
+                if (status !== rootOffset) {
+                    throw Error("Invalid!");
+                }
+            }
+
+            let readString = (data, length, offset = 0) => {
+                if (length === undefined) {
+                    // We don't know how long the string is, so keep reading until we find a null termination
+
+                    for (let i = offset; i < data.byteLength; i++) {
+
+                        if (data.getUint8(i) === 0) { // null byte
+                            length = i - this.readIndex;
+                            break;
+                        }
+                    }
+
+                    if (length === undefined) {
+                        throw Error("Couldn't find length of string");
+                    }
+                }
+
+                offset += data.byteOffset;
+
+                let dec = new TextDecoder();
+                let str = dec.decode(data.buffer.slice(offset, offset + length));
+
+                const nullChar = str.indexOf("\0"); // trim if we're null terminated early
+
+                if (nullChar !== -1) {
+                    str = str.substring(0, nullChar);
+                }
+
+                return str;
+            };
+
+            let readDirEnt = (blockIndex, offset = 0) => {
+                let block = blockData(blockIndex); // Read the block
+                let pos = offset;
+                return {
+                    name: readString(block, 16, pos),
+                    firstBlock: block.getUint16(pos += 16, true),
+                    flags: block.getUint16(pos += 2, true),
+                    length: block.getUint32(pos += 2, true)
+                }
+            };
+
+            let readDir = (directory) => {
+                let entries = [];
+
+                let blockIndex = directory.firstBlock;
+                let offset = 0;
+
+                // eslint-disable-next-line no-constant-condition
+                while (true) {
+                    // If reading the next directory would go over the block boundary, skip right ahead to the next block
+                    if (offset + SIZEOF_DIRECTORYENTRY > blockSize) {
+
+                        // This will tell us the *next* block for the current file - or an erroneous value such as EOF
+                        blockIndex = blockInfo(blockIndex);
+
+                        if (blockIndex === BLOCK_FLAG_END_OF_FILE) {
+                            break;
+                        }
+
+                        offset = 0;
+                    }
+
+                    let entry = readDirEnt(blockIndex, offset);
+
+                    offset += SIZEOF_DIRECTORYENTRY;
+
+                    if (entry.firstBlock === directory.firstBlock) {
+                        continue; // We've found ourselves, we can ignore this...
+                    }
+
+                    // Check validity...
+                    if ((entry.flags & DIR_ENTRY_FLAG_FREE) !== DIR_ENTRY_FLAG_FREE && (entry.flags & DIR_ENTRY_FLAG_VALID) === DIR_ENTRY_FLAG_VALID) {
+
+                        // We're a directory!
+                        if ((entry.flags & DIR_ENTRY_FLAG_DIRECTORY) === DIR_ENTRY_FLAG_DIRECTORY) {
+                            console.log(entry, " directory, first block: " + entry.firstBlock);
+                            // this.readFromDirectoryEntry(filesystem, entry); TODO, recurse here?
+                        } else {
+                            console.log(entry);
+                        }
+
+                        entries.push(entry);
+                    }
+                }
+
+                return entries;
+            }
+
+            let filesList = DOCUMENT.getElementById("f");
+
+            let dirTree = (dirEnt, ulElement) => {
+                let res = {};
+
+                readDir(dirEnt).forEach(entry => {
+                        let li = DOCUMENT.createElement("li");
+
+                        //recurse this directory
+                        if ((entry.flags & DIR_ENTRY_FLAG_DIRECTORY) === DIR_ENTRY_FLAG_DIRECTORY) {
+                            let node = DOCUMENT.createElement("div");
+                            node.classList.add("m");
+
+                            let expander = DOCUMENT.createElement("span");
+                            expander.classList.add("n"); // Tree node (allows expanding/contracting). Contracted by default
+
+                            let ul = DOCUMENT.createElement("ul");
+
+                            //ul.append(entry.name);
+                            expander.innerText = entry.name;
+
+                            res[entry.name] = dirTree(entry, ul);
+
+                            if (Object.keys(res[entry.name]).length === 0) {
+                                ul.append(" (empty)");
+                            }
+
+                            node.append(expander, ul);
+
+                            expander.addEventListener("click", () => {
+                                node.classList.toggle("m"); // Toggle active tag
+                            });
+
+                            li.append(node);
+
+                        } else {
+                            res[entry.name] = entry;
+
+                            let download = DOCUMENT.createElement("a");
+                            download.innerText = entry.name;
+                            download.href = "#";
+
+                            download.addEventListener("click", e => {
+                                e.preventDefault();
+                                downloadFile(entry); // todo: this anchor could directly link to a pre-made blob?
+                            });
+
+                            li.append(download);
+                        }
+
+                        ulElement.append(li);
+                    }
+                );
+
+                return res;
+            }
+
+            let downloadFile = (dirEnt) => {
+                // Read it...
+                const splitData = [];
+
+                let blockIndex = dirEnt.firstBlock;
+                let remainingBytes = dirEnt.length;
+
+                while (remainingBytes > 0) {
+                    const block = blockData(blockIndex);
+
+                    const toRead = Math.min(blockSize, remainingBytes); // only read as much as we need
+                    const dataOffset = block.byteOffset;
+
+                    splitData.push(new Uint8Array(block.buffer.slice(dataOffset, dataOffset + toRead)));
+
+                    remainingBytes -= toRead;
+
+                    if (remainingBytes <= 0) {
+                        break;
+                    }
+
+                    // This will tell us the *next* block for the current file - or an erroneous value such as EOF
+                    blockIndex = blockInfo(blockIndex);
+
+                    if (blockIndex === BLOCK_FLAG_END_OF_FILE) {
+                        break;
+                    }
+                }
+
+                const data = new Uint8Array(dirEnt.length);
+                let splitIndex = 0;
+
+                splitData.forEach(block => {
+                    data.set(block, splitIndex);
+                    splitIndex += block.byteLength;
+                });
+
+                // Download it...
+                const blob = new Blob([new Uint8Array(data)], {type: "octet/stream"});
+                const url = window.URL.createObjectURL(blob);
+
+                const a = document.createElement("a");
+                a.style.display = "none";
+                a.href = url;
+                a.download = dirEnt.name;
+
+                document.body.appendChild(a);
+
+                a.click();
+                window.URL.revokeObjectURL(url);
+            };
+
+            let rootDir = readDirEnt(rootOffset);
+
+            let tree = dirTree(rootDir, filesList);
+
+            console.log(rootDir, tree);
+        }
+    </script>
+</head>
+<body>
+<header>Your micro:bit files</header>
+<div>Here is a simple view of the files on your micro:bit. Connect to the internet to view the advanced browser!</div>
+<ul id="f"></ul>

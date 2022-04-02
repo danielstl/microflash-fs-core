@@ -1,0 +1,11 @@
+{
+  "name": "microflash-fs-core",
+  "version": "0.7.2",
+  "license": "MIT",
+  "scripts": {
+    "minify": "node minify.js"
+  },
+  "devDependencies": {
+    "html-minifier": "^4.0.0"
+  }
+}

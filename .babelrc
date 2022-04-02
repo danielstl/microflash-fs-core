@@ -1,0 +1,16 @@
+{
+  "presets": ["@babel/preset-env", "@babel/preset-typescript", ["minify", {
+    "evaluate": false,
+    "mangle": {
+      "topLevel": true,
+      "keepFnName": false,
+      "keepClassName": false
+    },
+    "removeConsole": true,
+    "removeDebugger": true
+  }]],
+  "plugins": [
+    "@babel/plugin-proposal-class-properties",
+    "@babel/plugin-proposal-object-rest-spread"
+  ]
+}
