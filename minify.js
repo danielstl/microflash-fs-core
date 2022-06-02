@@ -28,11 +28,11 @@ let result = minify(input, {
 
 console.log(result);
 
-// The overall HTML+JS MUST be byte aligned to 4096 bytes.
-// Use trailing spaces to ensure the file to 4096 bytes.
+// The overall HTML+JS MUST be byte aligned to 4000 bytes.
+// Use trailing spaces to ensure the file to 4000 bytes.
 // The file will end with <div id=z>
 
-const limit = 4096;
+const limit = 4000;
 const maxSize = limit - htmlSuffix.length;
 const padding = maxSize - result.length;
 if (padding < 0) {

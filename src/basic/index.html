@@ -55,7 +55,7 @@
         }
     </style>
     <script>
-        const DEBUG = true;
+        const DEBUG = window.localStorage.DEBUG;
         let fullBrowserCreated = false;
 
         function redirectToFullBrowser(data) {
@@ -66,17 +66,22 @@
             const iframe = DOCUMENT.createElement("iframe");
             iframe.setAttribute("name", "filesystem");
             iframe.setAttribute("allow", "usb");
-            iframe.setAttribute("src", DEBUG ? "http://localhost:8080" : "https://laughing-roentgen-badb1f.netlify.app/"); // todo: permanent url
+            iframe.setAttribute("src", DEBUG ? "http://localhost:8080" : "https://microflash.netlify.app/"); // todo: permanent url
+
+            window.addEventListener("message", e => {
+                if (e.data === "r") { // ready to receive filesystem data!
+                    window.frames.filesystem.postMessage({i: "fs", d: data}, "*");
+                    return;
+                }
+
+                if (e.data === "l") { // reload the page!
+                    window.location.reload();
+                }
+            });
 
             DOCUMENT.body.appendChild(iframe);
 
             fullBrowserCreated = true;
-
-            iframe.onload = function () {
-                let win = window.frames.filesystem;
-
-                setTimeout(() => win.postMessage({i: "fs", d: data}, "*"), 2000); //TODO hack, this just pushes the data after 2 sec, this needs to be dynamic
-            };
         }
 
         const SIZEOF_DIRECTORYENTRY = 24;
@@ -98,19 +103,24 @@
             let rawBytes = rawBytesElem.innerHTML;
             rawBytesElem.remove();
 
-            let flashStart = 0, flashEnd = 0, pageSize = 1024, blockSize = 512, flashSize = 131072; // todo: non-hardcode
-            let data = new DataView(new Uint8Array(rawBytes.match(/([0-9]|[a-f]){2}/gi).map(h => parseInt(h, 16))).buffer);
+            let fullData = new DataView(new Uint8Array(rawBytes.match(/([0-9]|[a-f]){2}/gi).map(h => parseInt(h, 16))).buffer);
+            let metaData = new DataView(fullData.buffer.slice(0, 96));
+            let fsData = new DataView(fullData.buffer.slice(96));
 
-            window.addEventListener("online", () => redirectToFullBrowser(data.buffer));
+            // FS metadata: [[page size 4b] [block size 4b] [flash size 4b] [webusb command buffer pointer 4b] ... total 96b]
+
+            let flashStart = 0, blockSize = metaData.getUint32(4, true);
+
+            window.addEventListener("online", () => redirectToFullBrowser(fullData.buffer));
 
             if (navigator.onLine) {
-                redirectToFullBrowser(data.buffer);
+                redirectToFullBrowser(fullData.buffer);
                 return;
             }
 
             // Gets block info for a specific index from the block table
-            let blockInfo = blockIndex => data.getUint16(flashStart + blockIndex * 2, true);
-            let blockData = blockIndex => new DataView(data.buffer, flashStart + blockIndex * blockSize, blockSize);
+            let blockInfo = blockIndex => fsData.getUint16(flashStart + blockIndex * 2, true);
+            let blockData = blockIndex => new DataView(fsData.buffer, flashStart + blockIndex * blockSize, blockSize);
 
             //Load the filesystem...
             let rootOffset = blockInfo(0);
@@ -129,7 +139,7 @@
                     for (let i = offset; i < data.byteLength; i++) {
 
                         if (data.getUint8(i) === 0) { // null byte
-                            length = i - this.readIndex;
+                            length = i;
                             break;
                         }
                     }
